@@ -93,9 +93,13 @@ button{ font-family:inherit; cursor:none; }
 #gate{
   position:fixed; inset:0; z-index:10000; background:var(--black);
   display:flex; align-items:center; justify-content:center;
-  transition:opacity .9s var(--ease), visibility .9s var(--ease);
+  transition:opacity .9s var(--ease), visibility 0s linear .9s;
+  pointer-events:auto;
 }
-#gate.hidden{ opacity:0; visibility:hidden; }
+/* pointer-events:none applies immediately (it is not animatable) — clicks pass
+   through the instant .hidden is added, independent of the opacity fade */
+#gate.hidden{ opacity:0; visibility:hidden; pointer-events:none; }
+#gate.removed{ display:none !important; }
 #gate::before{
   content:''; position:absolute; inset:0;
   background:
@@ -429,6 +433,137 @@ section{ position:relative; padding:140px 0; }
   <button class="gate-skip" id="gate-skip">OMITIR ▸</button>
 </div>
 
+<script>
+/* =========================================================
+   GATE CONTROLLER — isolated, runs first, self-healing.
+   This block is intentionally independent from the rest of
+   the site's JavaScript: if any other script on the page
+   throws, this controller still guarantees the gate closes
+   and the page becomes fully interactive.
+   ========================================================= */
+(function(){
+  "use strict";
+
+  var gate       = document.getElementById("gate");
+  var gateLog    = document.getElementById("gate-log");
+  var gateBar    = document.getElementById("gate-bar-fill");
+  var gateStamp  = document.getElementById("gate-stamp");
+  var gateSkip   = document.getElementById("gate-skip");
+  var gateClock  = document.getElementById("gate-clock");
+
+  if(!gate){ return; } // markup missing — nothing to guard
+
+  var closed = false;
+
+  // Hard, unconditional close. Safe to call multiple times.
+  function closeGate(){
+    if(closed) return;
+    closed = true;
+    try{
+      gate.classList.add("hidden");
+      document.body.style.overflow = "";
+      // fully detach from layout/hit-testing once the fade finishes,
+      // so a leftover node can never intercept a click even in edge cases
+      window.setTimeout(function(){
+        try{ gate.classList.add("removed"); }catch(e){}
+      }, 950);
+      try{ sessionStorage.setItem("ac_gate_seen","1"); }catch(e){ /* storage may be blocked — non-fatal */ }
+    }catch(e){
+      // absolute last resort: rip the gate out of the DOM
+      try{ gate.remove(); document.body.style.overflow = ""; }catch(e2){ console.error("Archivo Cero: gate failsafe failed", e2); }
+    }
+  }
+
+  // Failsafe: no matter what happens in the boot animation or
+  // anywhere else on the page, the gate is forced closed after 6s.
+  var failsafe = window.setTimeout(closeGate, 6000);
+
+  // If literally anything on the page errors, don't let it leave
+  // visitors locked out of the site.
+  window.addEventListener("error", closeGate);
+  window.addEventListener("unhandledrejection", closeGate);
+
+  gateSkip.addEventListener("click", function(){
+    window.clearTimeout(failsafe);
+    closeGate();
+  });
+
+  try{
+    var alreadySeen = false;
+    try{ alreadySeen = !!sessionStorage.getItem("ac_gate_seen"); }catch(e){ alreadySeen = false; }
+
+    var reduced = false;
+    try{ reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches; }catch(e){ reduced = false; }
+
+    if(alreadySeen || reduced){
+      window.clearTimeout(failsafe);
+      closeGate();
+      return;
+    }
+
+    document.body.style.overflow = "hidden";
+
+    function tickClock(){
+      try{
+        var s = new Date().toTimeString().slice(0,8);
+        if(gateClock) gateClock.textContent = s;
+        var fc = document.getElementById("footer-clock");
+        if(fc) fc.textContent = "SISTEMA ACTIVO · " + s;
+      }catch(e){}
+    }
+    tickClock();
+    window.setInterval(tickClock, 1000);
+
+    var bootLines = [
+      {text:"accediendo a archivo cero...", cls:""},
+      {text:"verificando identidad...", cls:""},
+      {text:"descifrando protocolo de seguridad...", cls:""},
+      {text:"cargando expedientes 001 – 003...", cls:"ok"},
+      {text:"integridad de datos: 100%", cls:"ok"},
+      {text:"acceso autorizado — nivel omega", cls:"ok"}
+    ];
+
+    var li = 0;
+    function nextLine(){
+      if(li >= bootLines.length){
+        if(gateBar) gateBar.style.width = "100%";
+        window.setTimeout(function(){ if(gateStamp) gateStamp.classList.add("show"); }, 200);
+        window.setTimeout(function(){ window.clearTimeout(failsafe); closeGate(); }, 1400);
+        return;
+      }
+      var line = document.createElement("div");
+      line.className = "gate-line";
+      var span = document.createElement("span");
+      if(bootLines[li].cls) span.className = bootLines[li].cls;
+      line.appendChild(span);
+      var cursor = document.createElement("span");
+      cursor.className = "gate-cursor";
+      line.appendChild(cursor);
+      gateLog.appendChild(line);
+
+      var text = "> " + bootLines[li].text;
+      var ci = 0;
+      var typer = window.setInterval(function(){
+        span.textContent = text.slice(0, ci+1);
+        ci++;
+        if(ci >= text.length){
+          window.clearInterval(typer);
+          cursor.remove();
+          if(gateBar) gateBar.style.width = Math.round(((li+1)/bootLines.length)*100)+"%";
+          li++;
+          window.setTimeout(nextLine, 180);
+        }
+      }, 16);
+    }
+    nextLine();
+  }catch(err){
+    console.error("Archivo Cero: boot animation failed, releasing gate immediately.", err);
+    window.clearTimeout(failsafe);
+    closeGate();
+  }
+})();
+</script>
+
 <!-- ============ NAV ============ -->
 <nav id="nav">
   <div class="container" style="display:flex;align-items:center;justify-content:space-between;">
@@ -572,6 +707,7 @@ section{ position:relative; padding:140px 0; }
 <script>
 (function(){
 "use strict";
+try{
 
 /* ---------- Data ---------- */
 const EXPEDIENTES = [
@@ -814,83 +950,10 @@ function draw(t){
 }
 requestAnimationFrame(draw);
 
-/* ---------- Boot / access gate ---------- */
-const gate = document.getElementById("gate");
-const gateLog = document.getElementById("gate-log");
-const gateBar = document.getElementById("gate-bar-fill");
-const gateStamp = document.getElementById("gate-stamp");
-const gateSkip = document.getElementById("gate-skip");
-const gateClock = document.getElementById("gate-clock");
-const footerClock = document.getElementById("footer-clock");
-
-function tickClock(){
-  const d = new Date();
-  const s = d.toTimeString().slice(0,8);
-  gateClock.textContent = s;
-  footerClock.textContent = "SISTEMA ACTIVO · " + s;
-}
-tickClock(); setInterval(tickClock, 1000);
-
-const bootLines = [
-  {text:"conectando con archivo central...", cls:""},
-  {text:"verificando credenciales de acceso...", cls:""},
-  {text:"descifrando protocolo de seguridad...", cls:""},
-  {text:"cargando expedientes 001 – 003...", cls:"ok"},
-  {text:"integridad de datos: 100%", cls:"ok"},
-  {text:"nivel de autorización: OMEGA", cls:"ok"}
-];
-
-let alreadyOpened = sessionStorage.getItem("ac_gate_seen");
-
-function runGate(){
-  if(alreadyOpened || window.matchMedia("(prefers-reduced-motion: reduce)").matches){
-    gate.classList.add("hidden");
-    document.body.style.overflow = "";
-    return;
-  }
-  document.body.style.overflow = "hidden";
-  let li = 0;
-  function nextLine(){
-    if(li >= bootLines.length){
-      gateBar.style.width = "100%";
-      setTimeout(()=>{ gateStamp.classList.add("show"); }, 200);
-      setTimeout(finishGate, 1400);
-      return;
-    }
-    const line = document.createElement("div");
-    line.className = "gate-line";
-    const span = document.createElement("span");
-    if(bootLines[li].cls) span.className = bootLines[li].cls;
-    line.appendChild(span);
-    gateLog.appendChild(line);
-    let ci = 0;
-    const text = "> " + bootLines[li].text;
-    const cursor = document.createElement("span");
-    cursor.className = "gate-cursor";
-    line.appendChild(cursor);
-    const typer = setInterval(()=>{
-      span.textContent = text.slice(0, ci+1);
-      ci++;
-      if(ci>=text.length){
-        clearInterval(typer);
-        cursor.remove();
-        gateBar.style.width = Math.round(((li+1)/bootLines.length)*100)+"%";
-        li++;
-        setTimeout(nextLine, 180);
-      }
-    }, 16);
-  }
-  nextLine();
-}
-function finishGate(){
-  gate.classList.add("hidden");
-  document.body.style.overflow = "";
-  sessionStorage.setItem("ac_gate_seen","1");
-}
-gateSkip.addEventListener("click", ()=>{
-  finishGate();
-});
-runGate();
+/* Note: the access-gate boot sequence is handled by its own isolated
+   controller, inlined right after the gate markup near the top of
+   <body>. That keeps it 100% independent from everything below —
+   if any component here throws, the gate still closes on schedule. */
 
 /* ---------- Ambient sound (synthesized, no external assets) ---------- */
 const ambientBtn = document.getElementById("ambient-toggle");
@@ -975,6 +1038,12 @@ function showEgg(msg){
   toastTimer = setTimeout(()=> t.classList.remove("show"), 4200);
 }
 
+}catch(err){
+  // The gate is controlled independently and will still close on its
+  // own timer/failsafe even if something here breaks — this only
+  // affects the enhancement below (cards, cursor, canvas, etc.).
+  console.error("Archivo Cero: a non-critical UI enhancement failed.", err);
+}
 })();
 </script>
 </body>
